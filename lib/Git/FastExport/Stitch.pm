@@ -6,6 +6,8 @@ use Carp;
 use Scalar::Util qw( blessed );
 use List::Util qw( first );
 use Git::FastExport;
+use File::Spec;
+use Fcntl;
 
 sub new {
     my ( $class, $options, @args ) = @_;
@@ -27,11 +29,24 @@ sub new {
     }, $class;
 
     # set the options
-    for my $key (qw( select )) {
+    for my $key (qw( select hintsfile )) {
         $self->{$key} = $options->{$key} if exists $options->{$key};
     }
     croak "Invalid value for 'select' option: '$self->{select}'"
         if $self->{select} !~ /^(?:first|last|random)$/;
+
+
+    #Load the hints file
+    my $hintmap = {};
+    open HINTS, "<$self->{hintsfile}" || die;
+    while ( <HINTS>) {
+        chomp ;
+        my @hashes =split ;
+        my $parent = shift @hashes;
+        $hintmap->{$parent} = \@hashes;
+    }
+    close HINTS;
+    $self->{hintmap} = $hintmap;
 
     # process the remaining args
     $self->stitch( splice @args, 0, 2 ) while @args;
@@ -41,7 +56,7 @@ sub new {
 
 # add a new repo to stich in
 sub stitch {
-    my ( $self, $repo, $dir, $name ) = @_;
+    my ( $self, $repo, $dir, $name   ) = @_;
 
     my $export
         = blessed($repo) && $repo->isa('Git::FastExport')
@@ -49,13 +64,30 @@ sub stitch {
         : eval { Git::FastExport->new($repo) };
     $@ =~ s/ at .*\z//s, croak $@ if !$export;
 
+    ##Ensure presence of a marksfile.
+    my $marksfile = File::Spec->rel2abs("_git_stitch_repo.marks", $repo);
+
+    #Now read in marks file, and create a commit / rev_commit mapping.
+    my ( %commitmap , %rev_commitmap);
+    open MARKS, "+>>$marksfile" || die;
+    seek(MARKS,0, Fcntl::SEEK_SET);
+    while ( <MARKS>) {
+        chomp ;
+        my ($mark, $commit ) =split ;
+        #Remove the leading ':' form the mark designator.
+        $mark =~ s/^://;
+        $commitmap{$mark} = $commit;
+    }
+    close MARKS;
+
     # initiate the Git::FastExport stream
-    $export->fast_export(qw( --progress=1 --all --date-order ))
+    $export->fast_export(qw( --progress=1 --all --date-order --force-seen --import-marks=_git_stitch_repo.marks --export-marks=_git_stitch_repo.marks )  )
         if !$export->{export_fh};
 
     # do not stich a repo with itself
     $repo = $export->{source};
     croak "Already stitching repository $repo" if exists $self->{repo}{$repo};
+
 
     # set up the internal structures
     $export->{mapdir}            = $dir;
@@ -64,6 +96,9 @@ sub stitch {
     $self->{repo}{$repo}{parser} = $export;
     $self->{repo}{$repo}{name}   = $name || $self->{name}++;
     $self->{repo}{$repo}{block}  = $export->next_block();
+    $self->{repo}{$repo}{marksfile}  = \%commitmap;
+    $self->{repo}{$repo}{commitmap}  = { };
+    $self->{repo}{$repo}{r_commitmap}  = { };
     $self->_translate_block( $repo );
 
     return $self;
@@ -131,6 +166,54 @@ sub next_block {
     my @parents = map {/:(\d+)/g} @{ $commit->{from} || [] },
         @{ $commit->{merge} || [] };
 
+
+    my %parent_map = $self->_map_parents($node,  \@parents);
+
+    # map parent marks
+    for ( @{ $commit->{from} || [] }, @{ $commit->{merge} || [] } ) {
+        s/:(\d+)/:$parent_map{$1}/g;
+    }
+
+    # update the parents information
+    for my $parent ( map { $commits->{ $parent_map{$_} } } @parents ) {
+        print STDERR "\tPZ: $parent->{name}\n";
+        push @{ $parent->{children} }, $node->{name};
+        push @{ $node->{parents}{ $parent->{repo} } }, $parent->{name};
+    }
+
+    print STDERR "C:$commit @parents $node->{parents}\n";
+    # dump the commit
+    return $commit;
+}
+
+
+sub _map_parents {
+    my ( $self, $node , $parents_ary) = @_;
+    my @parents = @$parents_ary;
+    my $commits = $self->{commits};
+    my $branch = $node->{branch};
+    my $repo = $node->{repo};
+    my $original_sha1 = $self->{repo}{$repo}{commitmap}{$node->{name}};
+
+    my $hints = $self->{hintmap}{$original_sha1};
+    if ($hints) {
+        my $hint = @{$hints}[0];
+        # Found a hint in the hintfile for this node. The
+        # hint file overrrides` any selection work below, but is  
+        # difficult to use on merges (and we currently don't support that syntax in 
+        # the hint file )
+        carp "Hints for merge commits may not work the way you expect" if $#parents > 1;
+
+        my $newparent_0 =  $self->{repo}{$repo}{r_commitmap}{$hint};
+
+        if ($newparent_0) {
+            print STDERR "HFP: $newparent_0\n";
+            return ( $parents[0] , $newparent_0 );
+        }
+        #else fallback to old method igonre the hint
+        carp "Hint for $original_sha1 cannot be used as $hint not yet seen" ;
+
+    }
     # get the reference parent list used by _last_alien_child()
     my $parents = {};
     for my $parent (@parents) {
@@ -148,23 +231,11 @@ sub next_block {
     }
 
     # map each parent to its last "alien" commit
-    my %parent_map = map {
+    return  map {
         $_ => $self->_last_alien_child( $commits->{$_}, $branch, $parents )->{name}
     } @parents;
 
-    # map parent marks
-    for ( @{ $commit->{from} || [] }, @{ $commit->{merge} || [] } ) {
-        s/:(\d+)/:$parent_map{$1}/g;
-    }
 
-    # update the parents information
-    for my $parent ( map { $commits->{ $parent_map{$_} } } @parents ) {
-        push @{ $parent->{children} }, $node->{name};
-        push @{ $node->{parents}{ $parent->{repo} } }, $parent->{name};
-    }
-
-    # dump the commit
-    return $commit;
 }
 
 sub _translate_block {
@@ -182,7 +253,16 @@ sub _translate_block {
     # map to the new mark
     for ( @{ $block->{mark} || [] } ) {
         s/:(\d+)/:$self->{mark}/;
-        $mark_map->{$repo}{$1} = $self->{mark}++;
+        my $mark = $self->{mark}++;
+        $mark_map->{$repo}{$1} = $mark;
+
+        ## Update the forward and reverse commit maps with this marks commit Id.
+        my $sha1 = $self->{repo}{$repo}{marksfile}{$1};
+        if ($sha1) {
+            $self->{repo}{$repo}{commitmap}{$mark}  = $sha1;
+            $self->{repo}{$repo}{r_commitmap}{$sha1}  = $mark;
+        }
+
     }
 
     # update marks in from & merge
