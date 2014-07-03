@@ -22,6 +22,8 @@ sub new {
         repo     => {},
         name     => 'A',
         cache    => {},
+        commitmap  => { },
+        r_commitmap  => { },
 
         # default options
         select => 'last',
@@ -102,8 +104,6 @@ sub stitch {
     $self->{repo}{$repo}{name}   = $name || $self->{name}++;
     $self->{repo}{$repo}{block}  = $export->next_block();
     $self->{repo}{$repo}{marksfile}  = \%commitmap;
-    $self->{repo}{$repo}{commitmap}  = { };
-    $self->{repo}{$repo}{r_commitmap}  = { };
     $self->_translate_block( $repo );
 
     return $self;
@@ -199,7 +199,7 @@ sub _map_parents {
     my $commits = $self->{commits};
     my $branch = $node->{branch};
     my $repo = $node->{repo};
-    my $original_sha1 = $self->{repo}{$repo}{commitmap}{$node->{name}};
+    my $original_sha1 = $self->{commitmap}{$node->{name}};
 
     my $hints = $self->{hintmap}{$original_sha1};
     if ($hints) {
@@ -210,7 +210,7 @@ sub _map_parents {
         # the hint file )
         carp "Hints for merge commits may not work the way you expect" if $#parents > 1;
 
-        my $newparent_0 =  $self->{repo}{$repo}{r_commitmap}{$hint};
+        my $newparent_0 =  $self->{r_commitmap}{$hint};
 
         if ($newparent_0) {
             print STDERR "HFP: $newparent_0\n";
@@ -265,8 +265,8 @@ sub _translate_block {
         ## Update the forward and reverse commit maps with this marks commit Id.
         my $sha1 = $self->{repo}{$repo}{marksfile}{$1};
         if ($sha1) {
-            $self->{repo}{$repo}{commitmap}{$mark}  = $sha1;
-            $self->{repo}{$repo}{r_commitmap}{$sha1}  = $mark;
+            $self->{commitmap}{$mark}  = $sha1;
+            $self->{r_commitmap}{$sha1}  = $mark;
         }
 
     }
