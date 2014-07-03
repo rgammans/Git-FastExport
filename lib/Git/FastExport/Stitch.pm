@@ -45,14 +45,16 @@ sub new {
 
     #Load the hints file
     my $hintmap = {};
-    open HINTS, "<$self->{hintsfile}" || die;
-    while ( <HINTS>) {
-        chomp ;
-        my @hashes =split ;
-        my $parent = shift @hashes;
-        $hintmap->{$parent} = \@hashes;
+    if ($self->{hintsfile}) {
+        open HINTS, "<$self->{hintsfile}" || die;
+        while ( <HINTS>) {
+            chomp ;
+            my @hashes =split ;
+            my $parent = shift @hashes;
+            $hintmap->{$parent} = \@hashes;
+        }
+        close HINTS;
     }
-    close HINTS;
     $self->{hintmap} = $hintmap;
 
     # process the remaining args
