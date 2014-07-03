@@ -25,16 +25,21 @@ sub new {
 
         # default options
         select => 'last',
+        datetype => 'commit_date',
 
     }, $class;
 
     # set the options
-    for my $key (qw( select hintsfile )) {
+    for my $key (qw( select hintsfile datetype )) {
         $self->{$key} = $options->{$key} if exists $options->{$key};
     }
     croak "Invalid value for 'select' option: '$self->{select}'"
         if $self->{select} !~ /^(?:first|last|random)$/;
 
+    croak "Invalid value for 'datetype' option: '$self->{datetype}'"
+        if $self->{datetype} !~ /^(?:authored_date|commit_date)$/;
+    
+    $self->{datetype} = 'date' if ($self->{datetype} eq "commit_date");
 
     #Load the hints file
     my $hintmap = {};
@@ -128,9 +133,10 @@ sub next_block {
 
     # select the oldest available commit
     my ($next) = keys %$repo;
-    $next
-        = $repo->{$next}{block}{date} < $repo->{$_}{block}{date} ? $next : $_
-        for keys %$repo;
+    for ( keys %$repo ) {
+        $next
+            = $repo->{$next}{block}{$self->{datetype}} < $repo->{$_}{block}{$self->{datetype}} ? $next : $_ ;
+    }
     my $commit = $repo->{$next}{block};
 
     # fetch the next block

@@ -23,7 +23,7 @@ sub fast_export {
     my ( $self, @args ) = @_;
     my $repo = $self->{git};
     $self->{source} = $repo->work_tree || $repo->git_dir;
-
+    #print STDERR join(' ',@args);
     # call the fast-export command (no default arguments)
     $self->{command} = $repo->command( 'fast-export', @args );
     $self->{export_fh} = $self->{command}->stdout;
@@ -92,6 +92,10 @@ sub next_block {
     if ( $block->{type} eq 'commit' ) {
         ( $block->{date} )
             = $block->{committer}[0] =~ /^committer [^>]*> (\d+) [-+]\d+$/g;
+    }
+    if ( $block->{type} eq 'commit' ) {
+        ( $block->{authored_date} )
+            = $block->{author}[0] =~ /^author [^>]*> (\d+) [-+]\d+$/g;
     }
 
     return $block;
